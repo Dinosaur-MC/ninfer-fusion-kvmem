@@ -12,6 +12,7 @@
 #include "runtime/engine/context_cache/resource_manager.h"
 #include "runtime/engine/diagnostics.h"
 #include "runtime/engine/scheduler.h"
+#include "runtime/engine/stuck_latch.h"
 #include "runtime/engine/generation_budget.h"
 
 #include <algorithm>
@@ -313,13 +314,31 @@ public:
     // Three context-cache exhaustions in a row without a successful admission mean the retained
     // checkpoints have wedged the pools: every retry of the session fails the same way. Reporting
     // the Engine unavailable lets the healthcheck-driven restart clear the pools.
-    static constexpr std::uint32_t kStuckContextCacheExhaustions = 3;
+    static constexpr std::uint32_t kStuckContextCacheExhaustions =
+        ::ninfer::runtime::kStuckContextCacheExhaustions;
+
+    // 2026-10-26: the latch below must not be the default. Three recoverable refusals used to turn
+    // the Engine permanently unavailable with no log line of its own; without a watchdog that
+    // restarts the process that is a live engine holding the GPU and answering 503 to everything
+    // afterwards. Default OFF; NINFER_KV_STUCK_LATCH=1 enables the historical latch rule for
+    // deployments that do restart on the health check. Note the streak also resets on every
+    // successful admission, so the latch is harder to trip than the pre-2026-10-26 code even when
+    // it is enabled. /health stays 200 and reports "degraded" while the streak is non-zero, and
+    // /metrics exports ninfer:context_cache_stuck_streak, so a latched or degrading Engine is
+    // observable without a watchdog.
+    [[nodiscard]] static bool stuck_latch_enabled() noexcept {
+        static const bool enabled = []() noexcept {
+            return ::ninfer::runtime::parse_stuck_latch_env(std::getenv("NINFER_KV_STUCK_LATCH"));
+        }();
+        return enabled;
+    }
 
     [[nodiscard]] bool is_available() const {
         std::lock_guard lock(queue_mutex_);
         return !stopping_ && !failed_ &&
-               consecutive_context_cache_exhaustions_.load(std::memory_order_relaxed) <
-                   kStuckContextCacheExhaustions;
+               !stuck_latch_blocks(
+                   consecutive_context_cache_exhaustions_.load(std::memory_order_relaxed),
+                   stuck_latch_enabled());
     }
 
     void reset_memory_peaks() noexcept {
@@ -585,6 +604,8 @@ private:
         std::optional<nvtx::ScopedRange> detail_range;
         detail_range.emplace(nvtx::Name::StatsPublication, nvtx::Category::Control);
         RuntimeStats snapshot = cumulative_stats_;
+        snapshot.consecutive_context_cache_exhaustions =
+            consecutive_context_cache_exhaustions_.load(std::memory_order_relaxed);
         resources_.populate_runtime_stats(*instance_.program, snapshot);
         {
             std::lock_guard lock(queue_mutex_);
@@ -1679,8 +1700,14 @@ private:
                         materializing_.reset();
                         if (!terminal.failure.empty()) {
                             ++cumulative_stats_.context_cache_exhausted_requests;
-                            consecutive_context_cache_exhaustions_.fetch_add(
-                                1, std::memory_order_relaxed);
+                            const std::uint32_t streak =
+                                consecutive_context_cache_exhaustions_.fetch_add(
+                                    1, std::memory_order_relaxed) + 1U;
+                            publish_diagnostic(
+                                diagnostics_, DiagnosticLevel::Warning,
+                                "context cache refused (streak=%u/%u latch=%s): %s", streak,
+                                kStuckContextCacheExhaustions,
+                                stuck_latch_enabled() ? "on" : "off", terminal.failure.c_str());
                             complete_error(request, std::make_exception_ptr(RequestError(
                                                         RequestErrorKind::Overloaded,
                                                         "context cache exhausted: " +
@@ -1836,6 +1863,9 @@ private:
         if (!erase_pending(request)) {
             throw std::logic_error("admitted request disappeared from the FIFO queue");
         }
+        // A successful admission proves the pools are not wedged. Clearing the streak only on
+        // materialization publication missed every request that was already resident.
+        consecutive_context_cache_exhaustions_.store(0, std::memory_order_relaxed);
         release_planning_state(request);
         if (materializing_ || slots_[lane] != nullptr) {
             throw std::logic_error("reserved materialization destination is not empty");
@@ -1936,7 +1966,14 @@ private:
                 // No active lane will release anything, so the head cannot wait its way in. Fail
                 // only this request: a throw would stop the worker and refuse every later request.
                 ++cumulative_stats_.context_cache_exhausted_requests;
-                consecutive_context_cache_exhaustions_.fetch_add(1, std::memory_order_relaxed);
+                const std::uint32_t streak =
+                    consecutive_context_cache_exhaustions_.fetch_add(
+                        1, std::memory_order_relaxed) + 1U;
+                publish_diagnostic(
+                    diagnostics_, DiagnosticLevel::Warning,
+                    "context cache refused (streak=%u/%u latch=%s): an idle Engine found no "
+                    "placement",
+                    streak, kStuckContextCacheExhaustions, stuck_latch_enabled() ? "on" : "off");
                 (void)remove_pending_error(
                     head, std::make_exception_ptr(RequestError(
                               RequestErrorKind::Overloaded,

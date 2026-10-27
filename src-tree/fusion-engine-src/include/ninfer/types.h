@@ -1414,6 +1414,10 @@ struct RuntimeStats {
     std::uint64_t active_captures_aborted   = 0;
     // Materializations aborted because a context-cache store rejected the placement.
     std::uint64_t context_cache_exhausted_requests = 0;
+    // Consecutive context-cache refusals with no successful admission in between. Unlike the
+    // cumulative counter above this gauge returns to zero, so a consumer can tell a transient
+    // refusal from a wedged pool even when the historical latch is disabled.
+    std::uint32_t consecutive_context_cache_exhaustions = 0;
     // A capture the Program declined because the offer was not physically feasible. Unlike an
     // abort this is a silent retention loss, so it needs its own counter to be observable.
     std::uint64_t active_captures_skipped = 0;

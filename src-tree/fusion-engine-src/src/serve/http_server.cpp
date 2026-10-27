@@ -1,4 +1,4 @@
-﻿#include "serve/http_server.h"
+#include "serve/http_server.h"
 
 #include "product/logging/logging.h"
 #include "serve/anthropic_messages.h"
@@ -700,8 +700,20 @@ void HttpServer::register_stats_routes() {
 
 void HttpServer::handle_health(httplib::Response& res) const {
     const bool available = service_ != nullptr && service_->is_available();
+    // A degrading Engine (repeated context-cache refusals without a successful admission) is not
+    // unavailable: the historical latch may be disabled, so the process keeps answering. Report it
+    // explicitly so a healthcheck can act on "degraded" without parsing refusals out of logs.
+    std::uint32_t streak = 0;
+    if (service_ != nullptr) {
+        streak = service_->runtime_stats().consecutive_context_cache_exhaustions;
+    }
+    const bool degraded = streak > 0;
     res.status           = available ? 200 : 503;
-    res.set_content(nlohmann::json{{"status", available ? "ok" : "unavailable"}}.dump(),
+    res.set_content(nlohmann::json{{"status", available ? (degraded ? "degraded" : "ok")
+                                                       : "unavailable"},
+                                   {"degraded", degraded},
+                                   {"context_cache_streak", streak}}
+                        .dump(),
                     "application/json; charset=utf-8");
 }
 

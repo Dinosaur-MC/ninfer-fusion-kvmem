@@ -95,6 +95,9 @@ std::string ServeMetrics::render(const LoadCapacity& capacity, const LoadSample&
     append(out, "ninfer:context_cache_exhausted_requests_total", "counter",
            "Requests failed because the context cache had no placement for them.",
            static_cast<double>(stats.context_cache_exhausted_requests));
+    append(out, "ninfer:context_cache_stuck_streak", "gauge",
+           "Consecutive context-cache refusals with no successful admission in between.",
+           static_cast<double>(stats.consecutive_context_cache_exhaustions));
     append(out, "ninfer:uptime_seconds", "gauge", "Seconds since the Engine became ready.",
            sample.uptime_seconds);
     return out;
