@@ -689,6 +689,10 @@ bool ProgramImpl::publish_active_continuation(SequenceState& state, RequestContr
         }
         populate_continuation_summary(state, summary);
         summary.active_references = 0;
+        // Nothing reusable survived (the ring or an earlier pressure decision dropped every
+        // checkpoint). Declining the publication is the documented terminal-discard path; the
+        // request itself still completes, the lane is just not catalogued.
+        if (!summary.endpoint && !summary.rewrite && summary.long_anchors.empty()) { return false; }
     } catch (...) { return false; }
     release_active_shared_references(state);
     release_sequence_growth_entitlement(state);

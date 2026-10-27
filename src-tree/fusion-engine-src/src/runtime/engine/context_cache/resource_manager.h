@@ -3924,6 +3924,26 @@ private:
             const ActiveEntry& active = active_[record->lane.value];
             if (record->publishes_private) {
                 if (!valid_continuation_summary(result.active_summary)) {
+                    std::fprintf(stderr,
+                                 "[capture] invalid private summary: endpoint=%d rewrite=%d "
+                                 "anchors=%zu endpoint_frontier=%llu endpoint_pages=%llu "
+                                 "endpoint_tokens=%llu\n",
+                                 result.active_summary.endpoint.has_value() ? 1 : 0,
+                                 result.active_summary.rewrite.has_value() ? 1 : 0,
+                                 result.active_summary.long_anchors.size(),
+                                 result.active_summary.endpoint
+                                     ? static_cast<unsigned long long>(
+                                           result.active_summary.endpoint->ref.frontier)
+                                     : 0ULL,
+                                 result.active_summary.endpoint
+                                     ? static_cast<unsigned long long>(
+                                           result.active_summary.endpoint->required_kv.main_pages)
+                                     : 0ULL,
+                                 result.active_summary.endpoint
+                                     ? static_cast<unsigned long long>(
+                                           result.active_summary.endpoint->rebuild_work.tokens)
+                                     : 0ULL);
+                    std::fflush(stderr);
                     throw std::logic_error("active capture returned an invalid private summary");
                 }
                 const CatalogEntry& publication = catalog_.at(active.publication_slot);

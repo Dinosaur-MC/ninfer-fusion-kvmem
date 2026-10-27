@@ -74,6 +74,12 @@ ProgramImpl::inspect_capture(const CaptureOffer& offer, const SharedPrefixHandle
     const std::uint32_t publish_scan_pages = kv_pages_for_frontier(group.frontier);
     bool publish_private = publish_private_requested;
     bool publish_shared  = publish_shared_requested;
+    // A capture offered for a sequence that has not executed anything yet (frontier 0) cannot
+    // describe a private endpoint: publishing one would hand the catalog an empty summary that the
+    // context cache rightly rejects. Decline the private half; the request itself keeps running.
+    if (publish_private && active_sequence(lane).execution_frontier == 0) {
+        publish_private = false;
+    }
     if ((publish_private || publish_shared) && text_kv_addresses != nullptr &&
         text_kv_pages != nullptr &&
         text_kv_pages->physical_pool().usable_pages() <
@@ -1141,6 +1147,16 @@ ActiveCaptureResult ProgramImpl::publish_active_capture(ActiveCaptureTransaction
     out.capacity_preparation_committed = transaction.replacement_removed;
     if (transaction.publish_private) {
         populate_continuation_summary(sequence, transaction.active_summary);
+        if (!transaction.active_summary.endpoint && !transaction.active_summary.rewrite &&
+            transaction.active_summary.long_anchors.empty()) {
+            std::fprintf(stderr,
+                         "[capture] empty private summary: endpoint_valid=%d frontier=%llu "
+                         "anchors=%zu rewrite=%d\n",
+                         sequence.endpoint_valid ? 1 : 0,
+                         static_cast<unsigned long long>(sequence.execution_frontier),
+                         sequence.long_anchors.size(), sequence.rewrite_state ? 1 : 0);
+            std::fflush(stderr);
+        }
         out.active_summary = std::move(transaction.active_summary);
     }
     out.victims               = std::move(transaction.pressure_results);

@@ -996,9 +996,11 @@ void ProgramImpl::populate_continuation_summary(const SequenceState& sequence,
                                                       .ordinal  = anchor.ordinal},
                                anchor.state, anchor.rebuild_work));
     }
-    if (!summary.endpoint && !summary.rewrite && summary.long_anchors.empty()) {
-        throw std::logic_error("private continuation has no checkpoint");
-    }
+    // A continuation may legitimately have no retained checkpoint: the ring or an earlier pressure
+    // decision can drop the endpoint, rewrite state and every long anchor while the sequence stays
+    // alive. Callers treat an empty summary as "nothing reusable to keep", so report it instead of
+    // turning ordinary loss of reuse into a broken invariant (which used to crash the worker).
+    // The sequence keeps its live KV; only prefix reuse is gone and the next request re-prefills.
     const auto* begin = continuation_states.data();
     const auto* end   = begin + continuation_capacity;
     if (&sequence >= begin && &sequence < end) {
