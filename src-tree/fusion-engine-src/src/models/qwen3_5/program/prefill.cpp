@@ -1293,7 +1293,9 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                     if (result.finalized) {
                         // The prompt-frontier state becomes publishable only after the generated
                         // Begin token is committed. commit() emits the offer for this group.
-                    } else if (staged.cursor < staged.prompt_tokens) {
+                    } else if (staged.cursor < staged.prompt_tokens &&
+                               (!staged.capture_groups[staged.next_capture].long_anchor ||
+                                sequence.execution_frontier >= staged.cursor)) {
                         staged.elapsed_seconds +=
                             std::chrono::duration<double>(Clock::now() - started).count();
                         if (++next_capture_offer_id_ == 0) { ++next_capture_offer_id_; }
