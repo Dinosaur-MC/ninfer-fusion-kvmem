@@ -407,7 +407,7 @@ void q4_small_t_mma_i8_launch(int blocks, cudaStream_t stream, const std::int8_t
                               Epilogue epilogue = {}, RowPolicy row_policy = {},
                               int columns = ActiveCols) {
     constexpr int kBytes = Q4SmallTI8Storage<KWarps, TileCols, Stages, TilesPerWarp>::kBytes;
-    constexpr auto kernel =
+    static constexpr auto kernel =
         q4_small_t_mma_i8_kernel<Geometry, TileCols, ActiveCols, Epilogue, RowPolicy,
                                  MaskedColumns, KWarps, Stages, TilesPerWarp>;
     static_assert(kBytes <= 48 * 1024, "small-T i8 MMA ring must fit static shared memory");

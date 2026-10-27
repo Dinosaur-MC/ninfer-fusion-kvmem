@@ -429,7 +429,7 @@ void launch_grouped(const Tensor& x, const Tensor& positions, const Tensor& coun
                     cudaStream_t stream) {
     if (fused_route_table("unified/context_kv_materialize", envelope.max_count * x.ne[2]) ==
         LinearRouteTable::Unified) {
-        constexpr auto kernel = context_kv_grouped_unified_kernel<Columns, KWarps>;
+        static constexpr auto kernel = context_kv_grouped_unified_kernel<Columns, KWarps>;
         const int shared =
             q8_prepare_shared<GroupedUnifiedSchedule<Columns, KWarps>::kSharedBytes, kernel>();
         CUDA_CHECK(pdl::launch_consumer(

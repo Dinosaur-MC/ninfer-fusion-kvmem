@@ -320,7 +320,7 @@ void q5_small_t_mma_launch(cudaStream_t stream, const __nv_bfloat16* x, const st
                            Epilogue epilogue, int columns) {
     using Schedule        = Q5SmallTSchedule<KWarps, TilesPerWarp>;
     constexpr int kBytes  = Q5SmallTStorage<KWarps, XCols, Stages, TilesPerWarp>::kBytes;
-    constexpr auto kernel =
+    static constexpr auto kernel =
         q5_small_t_mma_kernel<Rows, K, XCols, Stages, Epilogue, KWarps, TilesPerWarp>;
     static_assert(kBytes <= 48 * 1024, "small-T MMA stages must fit static shared memory");
     kernel<<<Rows / Schedule::kRowsPerCta, Schedule::kThreads, 0, stream>>>(

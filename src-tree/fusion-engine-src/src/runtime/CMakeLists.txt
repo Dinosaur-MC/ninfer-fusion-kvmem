@@ -3,8 +3,47 @@
 set(NINFER_DEVICE_PROFILES_FILE ${CMAKE_CURRENT_SOURCE_DIR}/engine/device_profiles.json)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${NINFER_DEVICE_PROFILES_FILE})
 file(READ ${NINFER_DEVICE_PROFILES_FILE} NINFER_DEVICE_PROFILES_JSON)
+# MSVC rejects a single string literal above 16,380 single-byte characters (C2026), and the
+# profile JSON is larger than that. Emit it as adjacent raw string literals that the compiler
+# concatenates; each chunk ends on a line boundary so the payload stays byte-identical.
+string(LENGTH "${NINFER_DEVICE_PROFILES_JSON}" _ninfer_profiles_len)
+set(_ninfer_profiles_literals "")
+set(_ninfer_profiles_offset 0)
+set(_ninfer_profiles_chunk 10000)
+# Guard the two ways this generator can silently emit invalid C++: an empty payload (the loop
+# never runs and the function body becomes "return ;") and a payload that closes the raw string
+# early. Keep the chunk below the MSVC single-literal limit as well.
+if(NINFER_DEVICE_PROFILES_JSON STREQUAL "")
+  message(FATAL_ERROR "device_profiles.json is empty; refusing to embed an empty route table")
+endif()
+string(FIND "${NINFER_DEVICE_PROFILES_JSON}" ")ninfer_json\"" _ninfer_profiles_delimiter)
+if(NOT _ninfer_profiles_delimiter EQUAL -1)
+  message(FATAL_ERROR "device_profiles.json contains )ninfer_json\"; choose another raw-string delimiter")
+endif()
+if(_ninfer_profiles_chunk GREATER 16000)
+  message(FATAL_ERROR "profile chunk size ${_ninfer_profiles_chunk} exceeds the MSVC C2026 limit")
+endif()
+while(_ninfer_profiles_offset LESS _ninfer_profiles_len)
+  math(EXPR _ninfer_profiles_remain "${_ninfer_profiles_len} - ${_ninfer_profiles_offset}")
+  if(_ninfer_profiles_remain GREATER _ninfer_profiles_chunk)
+    string(SUBSTRING "${NINFER_DEVICE_PROFILES_JSON}" ${_ninfer_profiles_offset} ${_ninfer_profiles_chunk} _ninfer_profiles_slice)
+    string(FIND "${_ninfer_profiles_slice}" "\n" _ninfer_profiles_nl REVERSE)
+    if(_ninfer_profiles_nl GREATER -1)
+      math(EXPR _ninfer_profiles_take "${_ninfer_profiles_nl} + 1")
+      string(SUBSTRING "${_ninfer_profiles_slice}" 0 ${_ninfer_profiles_take} _ninfer_profiles_slice)
+    endif()
+    string(APPEND _ninfer_profiles_literals "R\"ninfer_json(${_ninfer_profiles_slice})ninfer_json\" ")
+  else()
+    string(SUBSTRING "${NINFER_DEVICE_PROFILES_JSON}" ${_ninfer_profiles_offset} ${_ninfer_profiles_remain} _ninfer_profiles_slice)
+    string(APPEND _ninfer_profiles_literals "R\"ninfer_json(${_ninfer_profiles_slice})ninfer_json\" ")
+  endif()
+  string(LENGTH "${_ninfer_profiles_slice}" _ninfer_profiles_taken)
+  math(EXPR _ninfer_profiles_offset "${_ninfer_profiles_offset} + ${_ninfer_profiles_taken}")
+endwhile()
+set(NINFER_DEVICE_PROFILES_LITERALS "${_ninfer_profiles_literals}")
 configure_file(engine/device_profiles_builtin.cpp.in
                ${CMAKE_CURRENT_BINARY_DIR}/engine/device_profiles_builtin.cpp @ONLY)
+
 
 add_library(ninfer_runtime_support STATIC
   engine/admission_policy.cpp

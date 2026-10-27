@@ -334,7 +334,7 @@ void q4_ksplit_mma_launch(int blocks, cudaStream_t stream, const __nv_bfloat16* 
                            __nv_bfloat16* out, Epilogue epilogue = {}, RowPolicy row_policy = {},
                            int columns = ActiveCols) {
     constexpr int kBytes  = Q4KSplitStorage<KWarps, TileCols, Stages, TilesPerWarp>::kBytes;
-    constexpr auto kernel = q4_ksplit_mma_kernel<Geometry, TileCols, ActiveCols, Epilogue,
+    static constexpr auto kernel = q4_ksplit_mma_kernel<Geometry, TileCols, ActiveCols, Epilogue,
                                                   RowPolicy, MaskedColumns, KWarps, Stages,
                                                   TilesPerWarp, MinBlocks>;
     static_assert(kBytes <= 48 * 1024, "small-T MMA stages must fit static shared memory");
