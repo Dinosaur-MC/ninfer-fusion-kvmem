@@ -202,14 +202,47 @@ namespace {
 // about the registered artifact behind the alias: n_ctx is the per-request context ceiling,
 // n_ctx_train the model's native context, ftype the registered weights profile.
 Json model_json(const std::string& model_id, std::int64_t created, std::uint32_t max_model_len,
-                bool vision, const ninfer::ModelMetadata& metadata) {
+                std::uint32_t max_output_tokens, bool vision, bool tools, bool reasoning,
+                const ninfer::ModelMetadata& metadata) {
+    Json input_modalities = Json::array({"text"});
+    if (vision) { input_modalities.push_back("image"); }
+    // Clients (Cherry Studio, Open WebUI, LiteLLM-style gateways) decide whether to offer the
+    // tool-call and reasoning toggles from capability metadata, not from the model id. Publishing
+    // the same facts under several field names keeps those clients working without special cases.
     return Json{{"id", model_id},
                 {"object", "model"},
                 {"created", created},
                 {"owned_by", "ninfer"},
                 {"max_model_len", max_model_len},
                 {"context_window", max_model_len},
-                {"modalities", Json{{"vision", vision}}},
+                {"max_output_tokens", max_output_tokens},
+                {"max_tokens", max_output_tokens},
+                {"default_max_tokens", max_output_tokens},
+                {"modalities", Json{{"text", true}, {"vision", vision}}},
+                {"capabilities",
+                 Json{{"chat", true},
+                      {"tools", tools},
+                      {"tool_calls", tools},
+                      {"function_calling", tools},
+                      {"vision", vision},
+                      {"reasoning", reasoning},
+                      {"thinking", reasoning},
+                      {"streaming", true},
+                      {"embeddings", false}}},
+                {"supports_tools", tools},
+                {"supports_vision", vision},
+                {"supports_reasoning", reasoning},
+                {"supports_streaming", true},
+                {"architecture",
+                 Json{{"input_modalities", input_modalities},
+                      {"output_modalities", Json::array({"text"})}}},
+                {"supported_parameters",
+                 Json::array({"max_tokens", "max_completion_tokens", "temperature", "top_p",
+                              "top_k", "stop", "stream", "tools", "tool_choice",
+                              "reasoning_effort", "response_format"})},
+                {"top_provider",
+                 Json{{"context_length", max_model_len},
+                      {"max_completion_tokens", max_output_tokens}}},
                 {"status", Json{{"value", "loaded"}}},
                 {"meta",
                  Json{{"n_vocab", metadata.vocab_size},
@@ -224,11 +257,13 @@ Json model_json(const std::string& model_id, std::int64_t created, std::uint32_t
 } // namespace
 
 std::string make_models_list(const std::string& model_id, std::int64_t created,
-                             std::uint32_t max_model_len, bool vision,
+                             std::uint32_t max_model_len, std::uint32_t max_output_tokens,
+                             bool vision, bool tools, bool reasoning,
                              const ninfer::ModelMetadata& metadata) {
-    const Json payload = {
-        {"object", "list"},
-        {"data", Json::array({model_json(model_id, created, max_model_len, vision, metadata)})}};
+    const Json payload = {{"object", "list"},
+                          {"data", Json::array({model_json(model_id, created, max_model_len,
+                                                            max_output_tokens, vision, tools,
+                                                            reasoning, metadata)})}};
     return payload.dump();
 }
 
@@ -265,9 +300,12 @@ Json make_api_index(const std::string& model_id) {
 }
 
 std::string make_model_object(const std::string& model_id, std::int64_t created,
-                              std::uint32_t max_model_len, bool vision,
+                              std::uint32_t max_model_len, std::uint32_t max_output_tokens,
+                              bool vision, bool tools, bool reasoning,
                               const ninfer::ModelMetadata& metadata) {
-    return model_json(model_id, created, max_model_len, vision, metadata).dump();
+    return model_json(model_id, created, max_model_len, max_output_tokens, vision, tools, reasoning,
+                      metadata)
+        .dump();
 }
 
 std::string make_error_body(const ApiError& error) {

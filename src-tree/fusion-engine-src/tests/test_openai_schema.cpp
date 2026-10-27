@@ -1158,12 +1158,20 @@ int test_common_objects() {
         .parameters     = 27000000000ULL,
         .weight_bytes   = 17000000000ULL,
     };
-    const Json models = Json::parse(make_models_list("qwen", 7, 240000, true, metadata));
+    const Json models = Json::parse(make_models_list("qwen", 7, 240000, 4096, true, true, true,
+                                                     metadata));
     failures +=
         check(models["data"][0]["id"] == "qwen" && models["data"][0]["max_model_len"] == 240000 &&
                   models["data"][0]["context_window"] == 240000 &&
                   models["data"][0]["modalities"]["vision"] == true,
               "models list advertises the configured context limit and vision");
+    failures += check(
+        models["data"][0]["max_output_tokens"] == 4096 &&
+            models["data"][0]["capabilities"]["reasoning"] == true &&
+            models["data"][0]["capabilities"]["tools"] == true &&
+            models["data"][0]["supports_vision"] == true &&
+            models["data"][0]["architecture"]["input_modalities"][1] == "image",
+        "models list advertises the output ceiling and capability flags clients switch on");
     const Json list_meta = models["data"][0]["meta"];
     failures += check(list_meta["n_vocab"] == 248077 && list_meta["n_ctx"] == 240000 &&
                           list_meta["n_ctx_train"] == 262144 && list_meta["n_embd"] == 5120 &&
@@ -1182,10 +1190,15 @@ int test_common_objects() {
                                     endpoint["path"] == "/v1/chat/completions");
     }
     failures += check(lists_chat, "the API base index lists Chat Completions");
-    const Json model = Json::parse(make_model_object("qwen", 7, 240000, false, metadata));
+    const Json model = Json::parse(
+        make_model_object("qwen", 7, 240000, 4096, false, true, false, metadata));
     failures += check(model["max_model_len"] == 240000 && model["context_window"] == 240000 &&
                           model["modalities"]["vision"] == false,
                       "model lookup advertises the configured context limit and vision");
+    failures += check(model["capabilities"]["reasoning"] == false &&
+                          model["capabilities"]["tools"] == true &&
+                          model["supports_reasoning"] == false,
+                      "model lookup advertises tools and reasoning independently");
     failures += check(model["meta"]["n_embd"] == 5120 && model["meta"]["n_ctx_train"] == 262144 &&
                           model["meta"]["ftype"] == "groupwise-int",
                       "model lookup exposes the llama.cpp-compatible model meta");

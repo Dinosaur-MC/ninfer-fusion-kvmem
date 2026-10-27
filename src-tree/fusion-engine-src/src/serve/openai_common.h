@@ -38,10 +38,12 @@ void apply_openai_prompt_cache_policy(GenerationRequest& request, OpenAIPromptCa
 [[nodiscard]] bool is_hosted_openai_tool_type(std::string_view type) noexcept;
 
 std::string make_models_list(const std::string& model_id, std::int64_t created,
-                             std::uint32_t max_model_len, bool vision,
+                             std::uint32_t max_model_len, std::uint32_t max_output_tokens,
+                             bool vision, bool tools, bool reasoning,
                              const ninfer::ModelMetadata& metadata);
 std::string make_model_object(const std::string& model_id, std::int64_t created,
-                              std::uint32_t max_model_len, bool vision,
+                              std::uint32_t max_model_len, std::uint32_t max_output_tokens,
+                              bool vision, bool tools, bool reasoning,
                               const ninfer::ModelMetadata& metadata);
 // The /v1 discovery document: startup announces the API base as a URL, so the bare base answers
 // with the configured model alias and the endpoints this build serves instead of a 404.

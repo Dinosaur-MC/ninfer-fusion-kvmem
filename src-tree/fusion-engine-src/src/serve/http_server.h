@@ -134,6 +134,9 @@ private:
     [[nodiscard]] LoadSample load_sample() const;
     void handle_models(const httplib::Request& req, httplib::Response& res) const;
     void handle_model(const httplib::Request& req, httplib::Response& res) const;
+    // Output ceiling advertised to discovery clients: the configured default, or the per-request
+    // context ceiling when the default is unbounded.
+    [[nodiscard]] std::uint32_t advertised_max_output_tokens() const;
 
     void record_request_start(const RequestLogContext& context);
     void record_request_rejected(const RequestRejectionLogContext& context);

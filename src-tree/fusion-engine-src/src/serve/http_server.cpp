@@ -774,10 +774,18 @@ void HttpServer::handle_props(const httplib::Request&, httplib::Response& res) c
     res.set_content(props.dump(), "application/json; charset=utf-8");
 }
 
+std::uint32_t HttpServer::advertised_max_output_tokens() const {
+    const int configured = options_.default_max_tokens;
+    if (configured <= 0 || static_cast<std::uint32_t>(configured) > options_.max_context) {
+        return options_.max_context;
+    }
+    return static_cast<std::uint32_t>(configured);
+}
+
 void HttpServer::handle_models(const httplib::Request&, httplib::Response& res) const {
     res.set_content(make_models_list(public_model_id_, unix_time_now(), options_.max_context,
-                                     options_.enable_vision,
-                                     model_metadata_),
+                                     advertised_max_output_tokens(), options_.enable_vision,
+                                     /*tools=*/true, /*reasoning=*/true, model_metadata_),
                     "application/json; charset=utf-8");
 }
 
@@ -793,8 +801,8 @@ void HttpServer::handle_model(const httplib::Request& req, httplib::Response& re
         return;
     }
     res.set_content(make_model_object(public_model_id_, unix_time_now(), options_.max_context,
-                                      options_.enable_vision,
-                                      model_metadata_),
+                                      advertised_max_output_tokens(), options_.enable_vision,
+                                      /*tools=*/true, /*reasoning=*/true, model_metadata_),
                     "application/json; charset=utf-8");
 }
 
