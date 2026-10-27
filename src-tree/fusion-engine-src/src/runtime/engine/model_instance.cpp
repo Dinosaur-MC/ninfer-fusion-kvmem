@@ -16,6 +16,7 @@
 #include "models/qwen3_8_flash_next/impl/port/binder_port.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -26,6 +27,7 @@
 #include <system_error>
 #include <chrono>
 #include <set>
+#include <thread>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -181,6 +183,99 @@ std::vector<std::size_t> free_bytes_by_rank(const DeviceContext& device,
         out.push_back(free_bytes / sharing);
     }
     return out;
+}
+
+// Optional WDDM squeeze and reservation retry (environment-driven so the public EngineOptions
+// surface stays unchanged). Windows reports free VRAM before the driver has paged other processes
+// out; a short ballast allocation forces that eviction, and a brief retry lets the runtime reserve
+// the arena instead of failing the whole startup. Both are off unless the environment asks.
+struct ReservationRetryPolicy {
+    int attempts          = 0;
+    int interval_ms       = 250;
+    std::size_t squeeze_bytes = 0;
+    bool squeeze_once     = false;
+};
+
+ReservationRetryPolicy reservation_retry_policy() {
+    ReservationRetryPolicy policy;
+    if (const char* text = std::getenv("NINFER_VA_RETRY_COUNT")) {
+        policy.attempts = std::max(0, std::atoi(text));
+    }
+    if (const char* text = std::getenv("NINFER_VA_RETRY_MS")) {
+        policy.interval_ms = std::max(0, std::atoi(text));
+    }
+    if (const char* text = std::getenv("NINFER_VA_SQUEEZE_MIB")) {
+        policy.squeeze_bytes = static_cast<std::size_t>(std::strtoull(text, nullptr, 10)) << 20;
+        policy.squeeze_once  = policy.squeeze_bytes != 0;
+    }
+    return policy;
+}
+
+void squeeze_device_memory(std::size_t bytes) {
+    constexpr std::size_t kChunk = 256ULL << 20;
+    std::vector<void*> blocks;
+    std::size_t allocated = 0;
+    while (allocated < bytes) {
+        void* block       = nullptr;
+        const std::size_t want = std::min(kChunk, bytes - allocated);
+        if (cudaMalloc(&block, want) != cudaSuccess) { break; }
+        blocks.push_back(block);
+        allocated += want;
+    }
+    std::fprintf(stderr, "[squeeze] holding %zu MiB for 500 ms to evict other processes\n",
+                 allocated >> 20);
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    for (void* block : blocks) { (void)cudaFree(block); }
+    std::fflush(stderr);
+}
+
+// The ballast must run before the weights are materialized: once they occupy the device there is
+// nothing left to allocate. A process-wide latch keeps one squeeze per startup.
+void squeeze_before_weight_load() {
+    static std::atomic<bool> done{false};
+    if (done.exchange(true)) { return; }
+    const ReservationRetryPolicy policy = reservation_retry_policy();
+    if (policy.squeeze_bytes != 0) { squeeze_device_memory(policy.squeeze_bytes); }
+}
+
+// Optional post-startup reserve: hold device memory on purpose so the engine owns the card and
+// other applications cannot take the remaining VRAM. Windows may satisfy this by paging desktop
+// surfaces out, which is the point. The blocks are intentionally never freed.
+void hold_vram_ballast() {
+    static std::atomic<bool> done{false};
+    if (done.exchange(true)) { return; }
+    const char* text = std::getenv("NINFER_VRAM_BALLAST_MIB");
+    if (text == nullptr) { return; }
+    const std::size_t target = static_cast<std::size_t>(std::strtoull(text, nullptr, 10)) << 20;
+    if (target == 0) { return; }
+    constexpr std::size_t kChunk = 64ULL << 20;
+    static std::vector<void*> held;
+    std::size_t allocated = 0;
+    while (allocated < target) {
+        void* block       = nullptr;
+        const std::size_t want = std::min(kChunk, target - allocated);
+        if (cudaMalloc(&block, want) != cudaSuccess) { break; }
+        held.push_back(block);
+        allocated += want;
+    }
+    std::fprintf(stderr, "[ballast] holding %zu MiB of device memory\n", allocated >> 20);
+    std::fflush(stderr);
+}
+
+template <typename Resolve>
+auto resolve_with_retry(ReservationRetryPolicy policy, Resolve&& resolve) {
+    for (int attempt = 0;; ++attempt) {
+        try {
+            return resolve();
+        } catch (const std::invalid_argument& error) {
+            if (attempt >= policy.attempts) { throw; }
+            std::fprintf(stderr,
+                         "[reserve] attempt %d/%d still short (%s); retrying in %d ms\n",
+                         attempt + 1, policy.attempts, error.what(), policy.interval_ms);
+            std::fflush(stderr);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(policy.interval_ms));
+    }
 }
 
 // Disk-tier pages are keyed by token digests, which say nothing about the weights that produced
@@ -521,6 +616,7 @@ ConstructedModel assemble_fusion(const EngineOptions& requested, DeviceContext& 
     // Two stages because the Program cannot be built before the sequence plan exists: the reference
     // does the same split (`src/targets/registry.cpp:215` makes the `Loaded`, `:221` the `Instance`
     // that creates the Program from the finalized plan).
+    squeeze_before_weight_load();
     auto loaded = std::make_unique<LoadedQwen3_5>(std::move(model), options);
     frontend.complete();
     StartupPhaseScope planning(options.startup_observer, StartupPhase::TargetFinalize);
@@ -535,13 +631,16 @@ ConstructedModel assemble_fusion(const EngineOptions& requested, DeviceContext& 
     auto planner = models::qwen3_5::make_sequence_planner(
         loaded->parameters, device,
         artifact_scoped_disk_tier(options, loaded->model->info().artifact_id));
-    const std::vector<std::size_t> free_by_rank =
-        free_bytes_by_rank(device, options.wddm_evictable_budget,
-                           loaded->model->storage_stats().device_capacity_bytes);
-    auto resolution = resolve_kv_capacity(
-        options.kv_capacity, planner.capacity_curve(), free_by_rank.front(),
-        std::span<const std::size_t>(free_by_rank).subspan(1));
+    const std::size_t resident_bound = loaded->model->storage_stats().device_capacity_bytes;
+    auto resolution                  = resolve_with_retry(reservation_retry_policy(), [&] {
+        const std::vector<std::size_t> free_by_rank =
+            free_bytes_by_rank(device, options.wddm_evictable_budget, resident_bound);
+        return resolve_kv_capacity(options.kv_capacity, planner.capacity_curve(),
+                                   free_by_rank.front(),
+                                   std::span<const std::size_t>(free_by_rank).subspan(1));
+    });
     auto sequence   = std::move(planner).finalize(resolution.main_page_groups);
+    hold_vram_ballast();
     if (sequence.device_reservation_bytes() != resolution.runtime_reservation_bytes ||
         sequence.kv_capacity() != resolution.resolved_tokens ||
         !std::ranges::equal(sequence.extra_rank_reservation_bytes(),
@@ -677,6 +776,7 @@ ConstructedModel assemble_flash_next(const EngineOptions& requested, DeviceConte
         models::qwen3_8_flash_next::Package::plan_load(engine_binder, options, weights_profile);
     // `load_plan.materialization()` is this engine's own MaterializationPlan: the adapter's
     // `finish()` forwards to the engine binder (`binder_port.h:296`).
+    squeeze_before_weight_load();
     auto materialized = artifact::materialize(reader, load_plan.materialization(), device,
                                              &options.startup_observer);
     // Read the stats here, while `materialized` is live. The ported `LoadedModel` is an opaque
@@ -693,12 +793,15 @@ ConstructedModel assemble_flash_next(const EngineOptions& requested, DeviceConte
     StartupPhaseScope planning(options.startup_observer, StartupPhase::TargetFinalize);
     auto planner = models::qwen3_8_flash_next::Package::make_sequence_planner(device, options,
                                                                              weights_profile);
-    const std::vector<std::size_t> free_by_rank =
-        free_bytes_by_rank(device, options.wddm_evictable_budget, planned_materialization_bytes);
-    auto resolution = resolve_kv_capacity(
-        options.kv_capacity, planner.capacity_curve(), free_by_rank.front(),
-        std::span<const std::size_t>(free_by_rank).subspan(1));
+    auto resolution = resolve_with_retry(reservation_retry_policy(), [&] {
+        const std::vector<std::size_t> free_by_rank =
+            free_bytes_by_rank(device, options.wddm_evictable_budget, planned_materialization_bytes);
+        return resolve_kv_capacity(options.kv_capacity, planner.capacity_curve(),
+                                   free_by_rank.front(),
+                                   std::span<const std::size_t>(free_by_rank).subspan(1));
+    });
     auto sequence = std::move(planner).finalize(resolution.main_page_groups);
+    hold_vram_ballast();
     // The reference checks three quantities here (`registry.cpp:203-206`); the ported SequencePlan
     // exposes two of them (no `extra_rank_reservation_bytes`, `runtime.h:625-629`).
     if (sequence.device_reservation_bytes() != resolution.runtime_reservation_bytes ||
