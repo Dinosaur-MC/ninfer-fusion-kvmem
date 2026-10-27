@@ -231,11 +231,33 @@ void squeeze_device_memory(std::size_t bytes) {
 
 // The ballast must run before the weights are materialized: once they occupy the device there is
 // nothing left to allocate. A process-wide latch keeps one squeeze per startup.
+void hold_preload_ballast() {
+    static std::atomic<bool> done{false};
+    if (done.exchange(true)) { return; }
+    const char* text = std::getenv("NINFER_VRAM_BALLAST_PRELOAD_MIB");
+    if (text == nullptr) { return; }
+    const std::size_t target = static_cast<std::size_t>(std::strtoull(text, nullptr, 10)) << 20;
+    if (target == 0) { return; }
+    constexpr std::size_t kChunk = 64ULL << 20;
+    static std::vector<void*> held;
+    std::size_t allocated = 0;
+    while (allocated < target) {
+        void* block       = nullptr;
+        const std::size_t want = std::min(kChunk, target - allocated);
+        if (cudaMalloc(&block, want) != cudaSuccess) { break; }
+        held.push_back(block);
+        allocated += want;
+    }
+    std::fprintf(stderr, "[ballast] preload holding %zu MiB of device memory\n", allocated >> 20);
+    std::fflush(stderr);
+}
+
 void squeeze_before_weight_load() {
     static std::atomic<bool> done{false};
     if (done.exchange(true)) { return; }
     const ReservationRetryPolicy policy = reservation_retry_policy();
     if (policy.squeeze_bytes != 0) { squeeze_device_memory(policy.squeeze_bytes); }
+    hold_preload_ballast();
 }
 
 // Optional post-startup reserve: hold device memory on purpose so the engine owns the card and
@@ -255,6 +277,13 @@ void hold_vram_ballast() {
         void* block       = nullptr;
         const std::size_t want = std::min(kChunk, target - allocated);
         if (cudaMalloc(&block, want) != cudaSuccess) { break; }
+        // Touch every page: a WDDM virtual allocation that has never been written may not be
+        // committed to dedicated VRAM, and then it would neither show up as used nor keep other
+        // processes away.
+        if (cudaMemset(block, 0, want) != cudaSuccess) {
+            (void)cudaFree(block);
+            break;
+        }
         held.push_back(block);
         allocated += want;
     }
@@ -273,6 +302,10 @@ auto resolve_with_retry(ReservationRetryPolicy policy, Resolve&& resolve) {
                          "[reserve] attempt %d/%d still short (%s); retrying in %d ms\n",
                          attempt + 1, policy.attempts, error.what(), policy.interval_ms);
             std::fflush(stderr);
+        }
+        if (policy.squeeze_once) {
+            policy.squeeze_once = false;
+            squeeze_device_memory(policy.squeeze_bytes);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(policy.interval_ms));
     }
