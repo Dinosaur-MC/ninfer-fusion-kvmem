@@ -40,7 +40,7 @@ KVMem 环保留常驻窗口，将其他页降到主机层；需要时按内容�
 | MTP 投机 | `--spec mtp --draft-tokens 1 --mtp-attention-window 8` | 解码吞吐翻倍级（本机实测 `mtp accepted 77–92%`） |
 | 分段注入网关 | 超池题面按结构单元分片、逐片摘要回注；含 `L2z` 强制重建与 `L3` 可见拒答 | 题面 > 池时**不静默错**：要么分片答对，要么明确拒答 |
 
-**27B ternary 几何**：64 层 = 3×linear_attention + 1×full_attention ⇒ **只有 16 层带 KV**，25,728 B/token；`context_window 262144`。本机（RTX 4080 SUPER / `sm_89`）8 GiB 快档实测 `engine ≈7,365 MiB`、decode 100–275 tok/s、TTFT 10 s 量级（20K 题面）；8 GiB 长档为预测值。
+**27B ternary 几何**：64 层 = 3×linear_attention + 1×full_attention ⇒ **只有 16 层带 KV**，25,728 B/token；`context_window 262144`。RTX 4080 SUPER / `sm_89` 上记录的 `engine ≈7,365 MiB`、decode 100–275 tok/s、TTFT 10 s 量级（20K 题面）是**旧线（PQ2 + dflash2）口径**，不可与 27B ternary 线混用；本仓 27B ternary（native MTP，pool 2048，`--prefill-chunk 512`）在 RTX 4060 Laptop 8 GiB 上 2026-10-27 实测 **prefill 418–517 tok/s、decode 22.8–37.4 tok/s**，16K 题 TTFT 34 s、32K 题 TTFT 65–70 s、128K 题 prefill 11.2 tok/s；8 GiB 长档为预测值。
 
 **硬边界（读这一版必须先知道）**：**题面 token > 池 token ⇒ 单请求答案不可信**（引擎会打 `unverified` 告警；"没打警告"不等于安全，见 `src/serve/generation_service.cpp` 的注释）。超池题面必须走分片网关、每片 ≤ 池。分片聚合已实测精确（94K 题面 / 池 32,768 ⇒ `n=3`、`final=3241` = 真值）。
 
@@ -268,7 +268,7 @@ cmake --build build-89-clean --target ninfer-serve -j 8
 | 小池多针题面，两轮问答 | 6/6 + 6/6；`TAIL=256` 对照第二轮 2/6 | 2026-10-02；申请 4,000 token 池，按 64 token/页取整为 4,032 token；低池验收用 `k8v4` |
 | 94,698 token 长题 | 3/3 + 3/3 | 显式 `QUERY_TAIL=64` 且确认打分运行的实验臂；另有约 95k 题面零命中反例，仍未定位 |
 | 同会话长前缀复用 | 第二轮 cache 80,075，TTFT 70,829 ms → 126.5 ms | 白皮书 §4 的配置与题面；不代表任意请求都能达到该延迟 |
-| PQ2 + dflash2，draft 12 | 解码 571.9 tok/s | RTX 4080 SUPER 本机记录、计数语料；采用 `req#1 done` 口径，不是一般任务速度 |
+| PQ2 + dflash2，draft 12 | 解码 571.9 tok/s | RTX 4080 SUPER 本机记录、计数语料；采用 `req#1 done` 口径，不是一般任务速度；**旧线历史读数**，本仓 27B ternary 线实测 decode 22.8–37.4 tok/s |
 | RTX 5080 社区回执 | 104,991 token 题面中段针命中 | 2026-10-03，设备池为完整 262,144 token；不能当成该卡的小池检索验收 |
 | 256k 非环回归 | 256,944 prompt token；4 路并发两轮通过 | 2026-10-07 源码批，KVMem 关闭；不能作为开环多并发的证据 |
 
