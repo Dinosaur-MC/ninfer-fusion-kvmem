@@ -6,3 +6,6 @@ build*/
 .vs/
 Thumbs.db
 .DS_Store
+.temp/
+.deps/
+.vscode/settings.json
