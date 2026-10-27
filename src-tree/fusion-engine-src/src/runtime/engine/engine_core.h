@@ -2556,7 +2556,9 @@ private:
                 // request-level condition, not a broken engine: the caller asked to resume a session
                 // with no retained checkpoint. Drop the affected requests and keep the worker alive
                 // instead of latching the whole Engine; a client retry (or a fresh prompt) recovers.
-                if (std::string_view(invariant.what()) == "private continuation has no checkpoint") {
+                const std::string_view invariant_text = invariant.what();
+                if (invariant_text == "private continuation has no checkpoint" ||
+                    invariant_text == "active capture returned an invalid private summary") {
                     publish_diagnostic(diagnostics_, DiagnosticLevel::Warning,
                                        "worker: request continuation has no retained checkpoint - "
                                        "dropping the affected requests and recovering");

@@ -77,7 +77,9 @@ ProgramImpl::inspect_capture(const CaptureOffer& offer, const SharedPrefixHandle
     // A capture offered for a sequence that has not executed anything yet (frontier 0) cannot
     // describe a private endpoint: publishing one would hand the catalog an empty summary that the
     // context cache rightly rejects. Decline the private half; the request itself keeps running.
-    if (publish_private && active_sequence(lane).execution_frontier == 0) {
+    if (publish_private && group.frontier == 0) {
+        std::fprintf(stderr, "[capture] decline empty-frontier private publication\n");
+        std::fflush(stderr);
         publish_private = false;
     }
     if ((publish_private || publish_shared) && text_kv_addresses != nullptr &&
