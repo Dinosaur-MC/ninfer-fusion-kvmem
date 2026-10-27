@@ -2552,6 +2552,28 @@ private:
                 previous_unit_was_decode = false;
                 continue;
             } catch (const std::logic_error& invariant) {
+                // A continuation whose endpoint/anchors were evicted by the ring or by pressure is a
+                // request-level condition, not a broken engine: the caller asked to resume a session
+                // with no retained checkpoint. Drop the affected requests and keep the worker alive
+                // instead of latching the whole Engine; a client retry (or a fresh prompt) recovers.
+                if (std::string_view(invariant.what()) == "private continuation has no checkpoint") {
+                    publish_diagnostic(diagnostics_, DiagnosticLevel::Warning,
+                                       "worker: request continuation has no retained checkpoint - "
+                                       "dropping the affected requests and recovering");
+                    if (++oom_recovery_count_ > kOomMaxRecoveries) {
+                        publish_diagnostic(diagnostics_, DiagnosticLevel::Error,
+                                           "worker: %u consecutive recoveries - failing all pending",
+                                           oom_recovery_count_ - 1);
+                        fail_all_locked(std::current_exception());
+                        return;
+                    }
+                    HostPhaseMeasurement cleanup = begin_host_phase();
+                    recover_from_oom_locked(std::current_exception());
+                    finish_engine_phase(cleanup, EngineHostPhase::Maintenance);
+                    oom_backoff_             = kOomBackoffIterations;
+                    previous_unit_was_decode = false;
+                    continue;
+                }
                 if (!recover_invariant_failures_) {
                     crash_locked(std::current_exception());
                     return;
