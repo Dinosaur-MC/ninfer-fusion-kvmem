@@ -12,3 +12,14 @@
 
 > 说明：`accept_8g.py` 的默认日志/filler 路径是开发机路径（`E:\infer-build\kv-stream\…`），换机时必须用上面的参数覆盖。
 > 三件都是 stdin/stdout CLI，没有新增依赖（Python 标准库）。
+
+## 启动 profile（2026-10-28 新增）
+
+`tools/profiles/` 收录两个已验证的 `ninfer-serve.exe` 启动档：
+
+| 文件 | 档位 | 适用场景 |
+|---|---|---|
+| `profiles/start-64k.sh` | 65,536 ctx / host KV 4,096 MiB | 日常与 ≤40K 输入，速度最快 |
+| `profiles/start-128k.sh` | 131,072 ctx / host KV 8,192 MiB | 60K–120K 长文档，prefill 更慢且波动更大 |
+
+用法、环境变量与实测数据见 `tools/profiles/README.md`。
